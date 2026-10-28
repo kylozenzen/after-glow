@@ -1,0 +1,13 @@
+{
+  "name": "afterglow-netlify",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Afterglow Lite for Netlify: guest photo uploads, owner review, Buffer drafts",
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@netlify/blobs": ">=8.0.0"
+  }
+}

@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Share your photo</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 480px; margin: 24px auto; padding: 0 16px; color: #222; }
+    h1 { font-size: 1.4rem; margin-bottom: 4px; }
+    .sub { color: #666; margin-top: 0; }
+    label { display: block; margin: 14px 0; }
+    select, textarea, input[type=file] { width: 100%; font-size: 16px; padding: 8px; box-sizing: border-box; }
+    textarea { min-height: 70px; }
+    .check { display: flex; gap: 8px; align-items: flex-start; }
+    .check input { margin-top: 4px; }
+    button { width: 100%; padding: 12px; font-size: 16px; background: #222; color: #fff; border: 0; border-radius: 8px; }
+    button:disabled { opacity: 0.5; }
+    #result { margin-top: 16px; font-weight: 600; }
+    .note { font-size: 13px; color: #666; }
+  </style>
+</head>
+<body>
+  <h1 id="title">Share your photo</h1>
+  <p class="sub" id="sub">Loading…</p>
+
+  <form id="form" hidden>
+    <label>Where are you?
+      <select id="spot" required></select>
+    </label>
+
+    <label>Caption (optional)
+      <textarea id="caption" maxlength="280" placeholder="What a night"></textarea>
+    </label>
+
+    <label class="check">
+      <input type="checkbox" id="kids">
+      <span>There are kids in this photo</span>
+    </label>
+    <p class="note" id="kidsNote" hidden>Photos with kids go to the venue team first and stay private until a parent or guardian is confirmed.</p>
+
+    <label class="check">
+      <input type="checkbox" id="consent" required>
+      <span>I have permission to share this photo</span>
+    </label>
+
+    <label>Photo
+      <input type="file" id="file" accept="image/*" required>
+    </label>
+
+    <button id="submit" type="submit">Share photo</button>
+  </form>
+
+  <p id="result"></p>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const eventId = new URLSearchParams(location.search).get('event');
+
+    // Re-encodes the photo as JPEG at up to 2048px. This also drops location and camera data,
+    // and keeps uploads under the function size limit. Phone photos (HEIC) are converted here too.
+    async function prepare(file) {
+      const bitmap = await createImageBitmap(file);
+      const scale = Math.min(1, 2048 / Math.max(bitmap.width, bitmap.height));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(bitmap.width * scale);
+      canvas.height = Math.round(bitmap.height * scale);
+      canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      bitmap.close();
+      return new Promise((resolve, reject) => canvas.toBlob(
+        (blob) => (blob ? resolve(blob) : reject(new Error('Could not read that photo'))),
+        'image/jpeg',
+        0.9,
+      ));
+    }
+
+    async function loadEvent() {
+      if (!eventId) { $('sub').textContent = 'This link is missing an event.'; return; }
+      const res = await fetch(`/api/events/${encodeURIComponent(eventId)}`);
+      if (!res.ok) { $('sub').textContent = 'We could not find this event.'; return; }
+      const e = await res.json();
+      $('title').textContent = e.name;
+      $('sub').textContent = e.venue ? `${e.venue}. Share your favorite shot from tonight.` : 'Share your favorite shot from tonight.';
+      for (const spot of e.spots) {
+        const opt = document.createElement('option');
+        opt.value = spot;
+        opt.textContent = spot;
+        $('spot').appendChild(opt);
+      }
+      $('form').hidden = false;
+    }
+
+    $('kids').addEventListener('change', () => { $('kidsNote').hidden = !$('kids').checked; });
+
+    $('form').addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      const file = $('file').files[0];
+      if (!file) return;
+      $('submit').disabled = true;
+      $('result').textContent = 'Uploading…';
+
+      const qs = new URLSearchParams({
+        spot: $('spot').value,
+        caption: $('caption').value,
+        hasMinors: String($('kids').checked),
+        consent: String($('consent').checked),
+      });
+
+      try {
+        const blob = await prepare(file);
+        const res = await fetch(`/api/events/${encodeURIComponent(eventId)}/uploads?${qs}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'image/jpeg' },
+          body: blob,
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Upload failed');
+        $('result').textContent = data.status === 'held'
+          ? 'Thanks! Your photo is saved and will be shared once it is confirmed.'
+          : 'Thanks! Your photo is in. We will share the best ones.';
+        $('form').reset();
+        $('kidsNote').hidden = true;
+      } catch (err) {
+        $('result').textContent = err.message;
+      } finally {
+        $('submit').disabled = false;
+      }
+    });
+
+    loadEvent();
+  </script>
+</body>
+</html>

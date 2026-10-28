@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Afterglow Lite · Owner</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 980px; margin: 24px auto; padding: 0 16px; color: #222; }
+    fieldset { margin: 14px 0; border: 1px solid #ddd; border-radius: 8px; padding: 12px; }
+    legend { font-weight: 600; padding: 0 6px; }
+    input, select { font-size: 14px; padding: 6px; margin: 4px 4px 4px 0; }
+    button { font-size: 14px; padding: 6px 10px; margin: 3px 3px 3px 0; cursor: pointer; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; margin-top: 12px; }
+    .card { border: 1px solid #ddd; border-radius: 8px; padding: 8px; font-size: 13px; }
+    .card img { width: 100%; border-radius: 6px; background: #f2f2f2; min-height: 120px; object-fit: cover; }
+    .status { font-weight: 700; text-transform: uppercase; font-size: 11px; letter-spacing: 0.05em; }
+    .held { color: #b45309; } .approved { color: #047857; } .sent, .scheduled { color: #1d4ed8; }
+    .rejected, .retired { color: #991b1b; } .pending { color: #555; }
+    .err { color: #991b1b; margin-top: 8px; }
+    .small { color: #666; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h1>Afterglow Lite</h1>
+
+  <fieldset>
+    <legend>Owner access</legend>
+    <input id="token" type="password" placeholder="OWNER_TOKEN">
+    <button id="saveToken">Save</button>
+    <span class="small" id="mode"></span>
+  </fieldset>
+
+  <fieldset>
+    <legend>New event</legend>
+    <input id="evName" placeholder="Event name" size="26">
+    <input id="evVenue" placeholder="Venue" size="16">
+    <input id="evSpots" placeholder="Spots, comma-separated" value="Main bar, Photo wall, Patio" size="30">
+    <button id="createEvent">Create event</button>
+  </fieldset>
+
+  <fieldset>
+    <legend>Event</legend>
+    <select id="events"></select>
+    <button id="refresh">Refresh</button>
+    <div class="small" id="guestLink"></div>
+    <div class="grid" id="uploads"></div>
+    <div class="err" id="error"></div>
+  </fieldset>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const tokenInput = $('token');
+    tokenInput.value = sessionStorage.getItem('ownerToken') || '';
+    let channels = [];
+
+    async function api(path, opts = {}) {
+      const res = await fetch(path, {
+        method: opts.method || 'GET',
+        headers: { 'x-owner-token': tokenInput.value, ...(opts.body ? { 'Content-Type': 'application/json' } : {}) },
+        body: opts.body ? JSON.stringify(opts.body) : undefined,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || res.statusText);
+      return data;
+    }
+
+    function showError(err) { $('error').textContent = err ? err.message : ''; }
+
+    async function loadEvents() {
+      try {
+        const { events } = await api('/api/events');
+        $('events').innerHTML = events.map((e) => `<option value="${e.id}">${e.name}${e.venue ? ' · ' + e.venue : ''}</option>`).join('');
+        if (events.length) loadUploads();
+        const { channels: list, dryRun } = await api('/api/channels');
+        channels = list;
+        $('mode').textContent = dryRun ? 'Buffer: dry run' : 'Buffer: live';
+        showError(null);
+      } catch (err) { showError(err); }
+    }
+
+    async function loadUploads() {
+      const id = $('events').value;
+      if (!id) return;
+      $('guestLink').textContent = `Guest link: ${location.origin}/?event=${id}`;
+      try {
+        const { uploads } = await api(`/api/events/${id}/uploads`);
+        $('uploads').innerHTML = '';
+        for (const u of uploads) $('uploads').appendChild(renderCard(u));
+        showError(null);
+      } catch (err) { showError(err); }
+    }
+
+    function renderCard(u) {
+      const card = document.createElement('div');
+      card.className = 'card';
+      const img = document.createElement('img');
+      img.alt = '';
+      fetch(`/api/uploads/${u.id}/file`, { headers: { 'x-owner-token': tokenInput.value } })
+        .then((r) => (r.ok ? r.blob() : null))
+        .then((b) => { if (b) img.src = URL.createObjectURL(b); })
+        .catch(() => {});
+
+      const options = channels.map((c) => `<option value="${c.id}">${c.displayName || c.name}</option>`).join('');
+      const locked = u.status === 'held';
+      const canApprove = ['pending', 'rejected'].includes(u.status);
+      const canReject = ['pending', 'approved', 'held'].includes(u.status);
+      const canSend = u.status === 'approved' || u.status === 'sent';
+
+      card.innerHTML = `
+        <div class="status ${u.status}">${u.status}${u.hasMinors ? ' · kids' : ''}</div>
+        <div class="small">${u.spot}${u.caption ? ' · “' + escapeHtml(u.caption) + '”' : ''}</div>
+        <div class="small">${new Date(u.createdAt).toLocaleString()}</div>
+        <div class="small">Alt text:</div>
+        <input class="alt" value="${escapeHtml(u.altText || '')}" placeholder="Describe the photo" size="28">
+        <div>
+          ${canApprove ? '<button data-act="approve">Approve</button>' : ''}
+          ${canReject ? '<button data-act="reject">Reject</button>' : ''}
+          ${u.hasMinors ? `<button data-act="guardian">${u.guardianConsent ? 'Withdraw guardian consent' : 'Guardian consent on file'}</button>` : ''}
+          <button data-act="saveAlt">Save alt text</button>
+        </div>
+        ${canSend ? `
+        <div>
+          <select class="channel"><option value="">Draft only (no time)</option>${options}</select>
+          <input class="due" type="datetime-local">
+          <button data-act="send">${u.status === 'approved' ? 'Send to Buffer' : 'Schedule'}</button>
+        </div>` : ''}
+        ${u.status !== 'retired' ? '<button data-act="retire">Retire file</button>' : ''}
+      `;
+
+      card.addEventListener('click', async (ev) => {
+        const act = ev.target.dataset.act;
+        if (!act) return;
+        try {
+          if (act === 'approve') await api(`/api/uploads/${u.id}`, { method: 'PATCH', body: { status: 'approved' } });
+          if (act === 'reject') await api(`/api/uploads/${u.id}`, { method: 'PATCH', body: { status: 'rejected' } });
+          if (act === 'guardian') await api(`/api/uploads/${u.id}`, { method: 'PATCH', body: { guardianConsent: !u.guardianConsent } });
+          if (act === 'saveAlt') await api(`/api/uploads/${u.id}`, { method: 'PATCH', body: { altText: card.querySelector('.alt').value } });
+          if (act === 'retire') {
+            if (!confirm('Delete the stored photo? Its public link stops working.')) return;
+            await api(`/api/uploads/${u.id}/retire`, { method: 'POST' });
+          }
+          if (act === 'send') {
+            const channelId = card.querySelector('.channel').value || undefined;
+            const dueLocal = card.querySelector('.due').value;
+            const dueAt = dueLocal ? new Date(dueLocal).toISOString() : undefined;
+            const result = await api(`/api/uploads/${u.id}/send`, { method: 'POST', body: { channelId, dueAt } });
+            if (result.dryRun) alert('Dry run. Payload:\n\n' + JSON.stringify(result, null, 2));
+          }
+          showError(null);
+          loadUploads();
+        } catch (err) { showError(err); }
+      });
+      return card;
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    }
+
+    $('saveToken').onclick = () => { sessionStorage.setItem('ownerToken', tokenInput.value); loadEvents(); };
+    $('refresh').onclick = loadUploads;
+    $('events').onchange = loadUploads;
+    $('createEvent').onclick = async () => {
+      try {
+        await api('/api/events', {
+          method: 'POST',
+          body: {
+            name: $('evName').value,
+            venue: $('evVenue').value,
+            spots: $('evSpots').value.split(',').map((s) => s.trim()).filter(Boolean),
+          },
+        });
+        await loadEvents();
+      } catch (err) { showError(err); }
+    };
+
+    loadEvents();
+  </script>
+</body>
+</html>
